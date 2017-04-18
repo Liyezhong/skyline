@@ -35,19 +35,54 @@ struct mxc_lcdif_data {
 
 #define DISPDRV_LCD	"lcd"
 
+/* lcd resolution: 800 * 600 */
+#define RESOLUTION800_600  0
+/* lcd resolution: 1024 * 768 */
+#define RESOLUTION1024_768 1
 static struct fb_videomode lcdif_modedb[] = {
 	{
-	/* 800x480 @ 57 Hz , pixel clk @ 27MHz */
-	"CLAA-WVGA", 57, 800, 480, 37037, 40, 60, 10, 10, 20, 10,
+	/* 800x600 @ 57 Hz , pixel clk @ 27MHz */
+#if RESOLUTION800_600
+	"CLAA-WVGA", 57, 800, 600, 37037, 9, 16, 7, 9, 10, 10,
 	FB_SYNC_CLK_LAT_FALL,
 	FB_VMODE_NONINTERLACED,
 	0,},
+#elif RESOLUTION1024_768
+	"CLAA-WVGA", 60, 1024, 768, 15385, 220, 40, 21, 7, 60, 10,
+	FB_SYNC_CLK_LAT_FALL,
+	FB_VMODE_NONINTERLACED,
+	0,},
+#endif
+	// {
+	// /* 800x480 @ 57 Hz , pixel clk @ 27MHz */
+	// "CLAA-WVGA", 57, 800, 480, 37037, 40, 60, 10, 10, 20, 10,
+	// FB_SYNC_CLK_LAT_FALL,
+	// FB_VMODE_NONINTERLACED,
+	// 0,},
 	{
 	/* 800x480 @ 60 Hz , pixel clk @ 32MHz */
 	"SEIKO-WVGA", 60, 800, 480, 29850, 89, 164, 23, 10, 10, 10,
 	FB_SYNC_CLK_LAT_FALL,
 	FB_VMODE_NONINTERLACED,
 	0,},
+    {
+    /* 4.3inch_LCD */
+    "4.3inch_LCD", 60, 480, 272, KHZ2PICOS(9600), 2, 2, 2, 2, 41, 10,
+    FB_SYNC_CLK_LAT_FALL,
+    FB_VMODE_NONINTERLACED,
+    0,},
+    {
+    /* 7inch_LCD */
+    "7inch_LCD", 60, 800, 480, KHZ2PICOS(36000), 1, 1, 12, 25, 48, 3,
+    FB_SYNC_CLK_LAT_FALL,
+    FB_VMODE_NONINTERLACED,
+    0,},
+    {
+    /* LVDS 800x600 */
+    "LVDS", 60, 800, 600, KHZ2PICOS(36000), 151, 39, 23, 1, 63, 3,
+    FB_SYNC_CLK_LAT_FALL,
+    FB_VMODE_NONINTERLACED,
+    0,},
 };
 static int lcdif_modedb_sz = ARRAY_SIZE(lcdif_modedb);
 
