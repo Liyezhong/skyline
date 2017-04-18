@@ -1,272 +1,241 @@
 /*
- * drivers/net/phy/smsc.c
+ * SMSC/Microchip LAN9303 switch driver
  *
- * Driver for SMSC PHYs
- *
- * Author: Herbert Valerio Riedel
- *
- * Copyright (c) 2006 Herbert Valerio Riedel <hvr@gnu.org>
+ * Copyright (c) 2014 Stefan Roese <sr@...x.de>
  *
  * This program is free software; you can redistribute  it and/or modify it
  * under  the terms of  the GNU General  Public License as published by the
  * Free Software Foundation;  either version 2 of the  License, or (at your
  * option) any later version.
- *
- * Support added for SMSC LAN8187 and LAN8700 by steve.glendinning@shawell.net
- *
  */
 
-#include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/mii.h>
-#include <linux/ethtool.h>
-#include <linux/phy.h>
+#include <linux/init.h>
+#include <linux/sched.h>
+#include <linux/kernel.h>
 #include <linux/netdevice.h>
-#include <linux/smscphy.h>
+#include <linux/ethtool.h>
+#include <linux/mii.h>
+#include <linux/phy.h>
 
-static int smsc_phy_config_intr(struct phy_device *phydev)
+/* Generate phy-addr and -reg from the input address */
+#define PHY_ADDR(x)		((((x) >> 6) + 0x10) & 0x1f)
+#define PHY_REG(x)		(((x) >> 1) & 0x1f)
+
+#define LAN9303_ID		0x0050
+#define LAN9303_ID_VAL		0x9303
+
+#define BYTE_TEST		0x0064
+
+#define SWITCH_CSR_DATA		0x01ac
+#define SWITCH_CSR_CMD		0x01b0
+
+#define SWITCH_CSR_CMD_BUSY	0x80000000
+#define SWITCH_CSR_CMD_READ	0x40000000
+#define SWITCH_CSR_CMD_BE_ALL	0x000f0000
+
+#define TIMEOUT			100	/* msecs */
+
+static u32 reg_addr;
+static DEFINE_SPINLOCK(sysfs_lock);
+
+static u16 lan9303_read(struct phy_device *phydev, int reg)
 {
-	int rc = phy_write (phydev, MII_LAN83C185_IM,
-			((PHY_INTERRUPT_ENABLED == phydev->interrupts)
-			? MII_LAN83C185_ISF_INT_PHYLIB_EVENTS
-			: 0));
-
-	return rc < 0 ? rc : 0;
+    return phydev->bus->read(phydev->bus, PHY_ADDR(reg), PHY_REG(reg));
 }
 
-static int smsc_phy_ack_interrupt(struct phy_device *phydev)
+static void lan9303_write(struct phy_device *phydev, int reg, u16 val)
 {
-	int rc = phy_read (phydev, MII_LAN83C185_ISF);
-
-	return rc < 0 ? rc : 0;
+	phydev->bus->write(phydev->bus, PHY_ADDR(reg), PHY_REG(reg), val);
 }
 
-static int smsc_phy_config_init(struct phy_device *phydev)
+static u32 lan9303_read32(struct phy_device *phydev, int reg)
 {
-	int rc = phy_read(phydev, MII_LAN83C185_SPECIAL_MODES);
-	if (rc < 0)
-		return rc;
+	u32 val;
 
-	/* If the SMSC PHY is in power down mode, then set it
-	 * in all capable mode before using it.
-	 */
-	if ((rc & MII_LAN83C185_MODE_MASK) == MII_LAN83C185_MODE_POWERDOWN) {
-		int timeout = 50000;
+	mutex_lock(&phydev->bus->mdio_lock);
+	val = lan9303_read(phydev, reg);
+	val |= (lan9303_read(phydev, reg + 2) << 16) & 0xffff0000;
+	mutex_unlock(&phydev->bus->mdio_lock);
 
-		/* set "all capable" mode and reset the phy */
-		rc |= MII_LAN83C185_MODE_ALL;
-		phy_write(phydev, MII_LAN83C185_SPECIAL_MODES, rc);
-		phy_write(phydev, MII_BMCR, BMCR_RESET);
+	return val;
+}
 
-		/* wait end of reset (max 500 ms) */
-		do {
-			udelay(10);
-			if (timeout-- == 0)
-				return -1;
-			rc = phy_read(phydev, MII_BMCR);
-		} while (rc & BMCR_RESET);
+static void lan9303_write32(struct phy_device *phydev, int reg, u32 val)
+{
+	mutex_lock(&phydev->bus->mdio_lock);
+	lan9303_write(phydev, reg, val & 0xffff);
+	lan9303_write(phydev, reg + 2, (val >> 16) & 0xffff);
+	mutex_unlock(&phydev->bus->mdio_lock);
+}
+
+static int lan9303_wait_idle(struct phy_device *dev)
+{
+	unsigned long timeout = jiffies + msecs_to_jiffies(TIMEOUT);
+
+	while (time_after(timeout, jiffies)) {
+		if (!(lan9303_read32(dev, SWITCH_CSR_CMD) & SWITCH_CSR_CMD_BUSY))
+			return 0;
 	}
 
-	rc = phy_read(phydev, MII_LAN83C185_CTRL_STATUS);
-	if (rc < 0)
-		return rc;
+	pr_err("Timed out waiting for idle (reg=0x%08x)!\n",
+	       lan9303_read32(dev, SWITCH_CSR_CMD));
 
-	/* Enable energy detect mode for this SMSC Transceivers */
-	rc = phy_write(phydev, MII_LAN83C185_CTRL_STATUS,
-		       rc | MII_LAN83C185_EDPWRDOWN);
-	if (rc < 0)
-		return rc;
-
-	return smsc_phy_ack_interrupt (phydev);
+	return -ETIMEDOUT;
 }
 
-static int lan911x_config_init(struct phy_device *phydev)
+static u32 lan9303_read_indirect(struct phy_device *dev, int reg)
 {
-	return smsc_phy_ack_interrupt(phydev);
+	u32 tmp;
+
+	lan9303_wait_idle(dev);
+	lan9303_write32(dev, SWITCH_CSR_CMD,
+			SWITCH_CSR_CMD_BUSY | SWITCH_CSR_CMD_READ |
+			SWITCH_CSR_CMD_BE_ALL | reg);
+
+	/* Flush the previous write by reading the BYTE_TEST register */
+	tmp = lan9303_read32(dev, BYTE_TEST);
+	lan9303_wait_idle(dev);
+
+	return lan9303_read32(dev, SWITCH_CSR_DATA);
 }
 
-/*
- * The LAN8710/LAN8720 requires a minimum of 2 link pulses within 64ms of each
- * other in order to set the ENERGYON bit and exit EDPD mode.  If a link partner
- * does send the pulses within this interval, the PHY will remained powered
- * down.
- *
- * This workaround will manually toggle the PHY on/off upon calls to read_status
- * in order to generate link test pulses if the link is down.  If a link partner
- * is present, it will respond to the pulses, which will cause the ENERGYON bit
- * to be set and will cause the EDPD mode to be exited.
- */
-static int lan87xx_read_status(struct phy_device *phydev)
+static void lan9303_write_indirect(struct phy_device *dev, int reg, u32 val)
 {
-	int err = genphy_read_status(phydev);
+	u32 tmp;
 
-	if (!phydev->link) {
-		/* Disable EDPD to wake up PHY */
-		int rc = phy_read(phydev, MII_LAN83C185_CTRL_STATUS);
-		if (rc < 0)
-			return rc;
+	lan9303_wait_idle(dev);
+	lan9303_write32(dev, SWITCH_CSR_DATA, val);
+	lan9303_write32(dev, SWITCH_CSR_CMD,
+			SWITCH_CSR_CMD_BUSY | SWITCH_CSR_CMD_BE_ALL | reg);
 
-		rc = phy_write(phydev, MII_LAN83C185_CTRL_STATUS,
-			       rc & ~MII_LAN83C185_EDPWRDOWN);
-		if (rc < 0)
-			return rc;
-
-		/* Sleep 64 ms to allow ~5 link test pulses to be sent */
-		msleep(64);
-
-		/* Re-enable EDPD */
-		rc = phy_read(phydev, MII_LAN83C185_CTRL_STATUS);
-		if (rc < 0)
-			return rc;
-
-		rc = phy_write(phydev, MII_LAN83C185_CTRL_STATUS,
-			       rc | MII_LAN83C185_EDPWRDOWN);
-		if (rc < 0)
-			return rc;
-	}
-
-	return err;
+	/* Flush the previous write by reading the BYTE_TEST register */
+	tmp = lan9303_read32(dev, BYTE_TEST);
+	lan9303_wait_idle(dev);
 }
 
-static struct phy_driver smsc_phy_driver[] = {
+static ssize_t lan9303_reg_addr_show(struct device *d,
+				     struct device_attribute *attr, char *buf)
 {
-	.phy_id		= 0x0007c0a0, /* OUI=0x00800f, Model#=0x0a */
-	.phy_id_mask	= 0xfffffff0,
-	.name		= "SMSC LAN83C185",
-
-	.features	= (PHY_BASIC_FEATURES | SUPPORTED_Pause
-				| SUPPORTED_Asym_Pause),
-	.flags		= PHY_HAS_INTERRUPT | PHY_HAS_MAGICANEG,
-
-	/* basic functions */
-	.config_aneg	= genphy_config_aneg,
-	.read_status	= genphy_read_status,
-	.config_init	= smsc_phy_config_init,
-
-	/* IRQ related */
-	.ack_interrupt	= smsc_phy_ack_interrupt,
-	.config_intr	= smsc_phy_config_intr,
-
-	.suspend	= genphy_suspend,
-	.resume		= genphy_resume,
-
-	.driver		= { .owner = THIS_MODULE, }
-}, {
-	.phy_id		= 0x0007c0b0, /* OUI=0x00800f, Model#=0x0b */
-	.phy_id_mask	= 0xfffffff0,
-	.name		= "SMSC LAN8187",
-
-	.features	= (PHY_BASIC_FEATURES | SUPPORTED_Pause
-				| SUPPORTED_Asym_Pause),
-	.flags		= PHY_HAS_INTERRUPT | PHY_HAS_MAGICANEG,
-
-	/* basic functions */
-	.config_aneg	= genphy_config_aneg,
-	.read_status	= genphy_read_status,
-	.config_init	= smsc_phy_config_init,
-
-	/* IRQ related */
-	.ack_interrupt	= smsc_phy_ack_interrupt,
-	.config_intr	= smsc_phy_config_intr,
-
-	.suspend	= genphy_suspend,
-	.resume		= genphy_resume,
-
-	.driver		= { .owner = THIS_MODULE, }
-}, {
-	.phy_id		= 0x0007c0c0, /* OUI=0x00800f, Model#=0x0c */
-	.phy_id_mask	= 0xfffffff0,
-	.name		= "SMSC LAN8700",
-
-	.features	= (PHY_BASIC_FEATURES | SUPPORTED_Pause
-				| SUPPORTED_Asym_Pause),
-	.flags		= PHY_HAS_INTERRUPT | PHY_HAS_MAGICANEG,
-
-	/* basic functions */
-	.config_aneg	= genphy_config_aneg,
-	.read_status	= genphy_read_status,
-	.config_init	= smsc_phy_config_init,
-
-	/* IRQ related */
-	.ack_interrupt	= smsc_phy_ack_interrupt,
-	.config_intr	= smsc_phy_config_intr,
-
-	.suspend	= genphy_suspend,
-	.resume		= genphy_resume,
-
-	.driver		= { .owner = THIS_MODULE, }
-}, {
-	.phy_id		= 0x0007c0d0, /* OUI=0x00800f, Model#=0x0d */
-	.phy_id_mask	= 0xfffffff0,
-	.name		= "SMSC LAN911x Internal PHY",
-
-	.features	= (PHY_BASIC_FEATURES | SUPPORTED_Pause
-				| SUPPORTED_Asym_Pause),
-	.flags		= PHY_HAS_INTERRUPT | PHY_HAS_MAGICANEG,
-
-	/* basic functions */
-	.config_aneg	= genphy_config_aneg,
-	.read_status	= genphy_read_status,
-	.config_init	= lan911x_config_init,
-
-	/* IRQ related */
-	.ack_interrupt	= smsc_phy_ack_interrupt,
-	.config_intr	= smsc_phy_config_intr,
-
-	.suspend	= genphy_suspend,
-	.resume		= genphy_resume,
-
-	.driver		= { .owner = THIS_MODULE, }
-}, {
-	.phy_id		= 0x0007c0f0, /* OUI=0x00800f, Model#=0x0f */
-	.phy_id_mask	= 0xfffffff0,
-	.name		= "SMSC LAN8710/LAN8720",
-
-	.features	= (PHY_BASIC_FEATURES | SUPPORTED_Pause
-				| SUPPORTED_Asym_Pause),
-	.flags		= PHY_HAS_INTERRUPT | PHY_HAS_MAGICANEG,
-
-	/* basic functions */
-	.config_aneg	= genphy_config_aneg,
-	.read_status	= lan87xx_read_status,
-	.config_init	= smsc_phy_config_init,
-
-	/* IRQ related */
-	.ack_interrupt	= smsc_phy_ack_interrupt,
-	.config_intr	= smsc_phy_config_intr,
-
-	.suspend	= genphy_suspend,
-	.resume		= genphy_resume,
-
-	.driver		= { .owner = THIS_MODULE, }
-} };
-
-static int __init smsc_init(void)
-{
-	return phy_drivers_register(smsc_phy_driver,
-		ARRAY_SIZE(smsc_phy_driver));
+	return sprintf(buf, "%04x\n", reg_addr);
 }
 
-static void __exit smsc_exit(void)
+static ssize_t lan9303_reg_addr_store(struct device *d,
+				      struct device_attribute *attr,
+				      const char *buf, size_t count)
 {
-	return phy_drivers_unregister(smsc_phy_driver,
-		ARRAY_SIZE(smsc_phy_driver));
+	sscanf(buf, "%x", &reg_addr);
+
+	return strnlen(buf, count);
 }
 
-MODULE_DESCRIPTION("SMSC PHY driver");
-MODULE_AUTHOR("Herbert Valerio Riedel");
-MODULE_LICENSE("GPL");
+static DEVICE_ATTR(lan9303_reg_addr, S_IRUGO | S_IWUSR,
+		   lan9303_reg_addr_show, lan9303_reg_addr_store);
 
-module_init(smsc_init);
-module_exit(smsc_exit);
+static ssize_t lan9303_reg_val_show(struct device *d,
+				    struct device_attribute *attr, char *buf)
+{
+	struct phy_device *phydev = dev_get_drvdata(d);
+	unsigned long flags;
+	u32 val;
 
-static struct mdio_device_id __maybe_unused smsc_tbl[] = {
-	{ 0x0007c0a0, 0xfffffff0 },
-	{ 0x0007c0b0, 0xfffffff0 },
-	{ 0x0007c0c0, 0xfffffff0 },
-	{ 0x0007c0d0, 0xfffffff0 },
-	{ 0x0007c0f0, 0xfffffff0 },
-	{ }
+	spin_lock_irqsave(&sysfs_lock, flags);
+	val = lan9303_read_indirect(phydev, reg_addr);
+	spin_unlock_irqrestore(&sysfs_lock, flags);
+
+	return sprintf(buf, "%08x\n", val);
+}
+
+static ssize_t lan9303_reg_val_store(struct device *d,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct phy_device *phydev = dev_get_drvdata(d);
+	unsigned long flags;
+	u32 val;
+
+	sscanf(buf, "%x", &val);
+
+	spin_lock_irqsave(&sysfs_lock, flags);
+	lan9303_write_indirect(phydev, reg_addr, val);
+	spin_unlock_irqrestore(&sysfs_lock, flags);
+
+	return strnlen(buf, count);
+}
+
+static DEVICE_ATTR(lan9303_reg_val, S_IRUGO | S_IWUSR,
+		   lan9303_reg_val_show, lan9303_reg_val_store);
+
+static struct attribute *lan9303_sysfs_entries[] = {
+	&dev_attr_lan9303_reg_addr.attr,
+	&dev_attr_lan9303_reg_val.attr,
+	NULL
 };
 
-MODULE_DEVICE_TABLE(mdio, smsc_tbl);
+static struct attribute_group lan9303_attribute_group = {
+	.name = NULL,		/* put in device directory */
+	.attrs = lan9303_sysfs_entries,
+};
+
+static int lan9303_match_phy_device(struct phy_device *phydev)
+{
+	/*
+	 * One dummy read access needed to reliably detect the switch
+	 */
+	lan9303_read32(phydev, BYTE_TEST);
+
+	if (lan9303_read(phydev, LAN9303_ID + 2) == LAN9303_ID_VAL) {
+		phydev->phy_id = lan9303_read32(phydev, LAN9303_ID);
+		return 1;
+	}
+
+	return 0;
+}
+
+static int lan9303_config_init(struct phy_device *phydev)
+{
+	int ret;
+
+	dev_set_drvdata(&phydev->dev, phydev);
+	ret = sysfs_create_group(&phydev->dev.kobj, &lan9303_attribute_group);
+	if (ret) {
+		dev_err(&phydev->dev, "unable to create sysfs file, err=%d\n",
+			ret);
+		return ret;
+	}
+
+	dev_info(&phydev->dev, "SMSC LAN9303 switch found, Chip ID:%04x, Revision:%04x\n",
+		 lan9303_read(phydev, LAN9303_ID + 2),
+		 lan9303_read(phydev, LAN9303_ID));
+
+	return 0;
+}
+
+static struct phy_driver lan9303_pdriver = {
+	.phy_id		= LAN9303_ID_VAL,
+	.phy_id_mask	= 0xffffffff,
+	.name		= "SMSC LAN9303",
+	.features	= PHY_BASIC_FEATURES,
+	.flags		= 0,
+	.config_init	= lan9303_config_init,
+	.config_aneg	= genphy_config_aneg,
+	.read_status	= genphy_read_status,
+	.match_phy_device = lan9303_match_phy_device,
+	.driver  = { .owner = THIS_MODULE, },
+};
+
+static int __init lan9303_init(void)
+{
+	return phy_driver_register(&lan9303_pdriver);
+}
+module_init(lan9303_init);
+
+static void __exit lan9303_exit(void)
+{
+	phy_driver_unregister(&lan9303_pdriver);
+}
+module_exit(lan9303_exit);
+
+MODULE_DESCRIPTION("SMSC LAN9303 switch driver");
+MODULE_AUTHOR("Stefan Roese <sr@...x.de>");
+MODULE_LICENSE("GPL-2.0+");
