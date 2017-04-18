@@ -37,6 +37,7 @@
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 #include <asm/system_misc.h>
+#include <linux/delay.h>
 
 #include "common.h"
 #include "cpuidle.h"
@@ -47,6 +48,14 @@ static int flexcan_en_gpio;
 static int flexcan_stby_gpio;
 static int flexcan0_en;
 static int flexcan1_en;
+
+static int flexcan0_lbk;
+
+static int lcd_pwr_gpio;
+static int dvi_pwr_gpio;
+static int dvi_detect_gpio;
+static int dvi_reset_gpio;
+static int dvi_ddc_i2c_gpio;
 static void mx6q_flexcan_switch(void)
 {
 	if (flexcan0_en || flexcan1_en) {
@@ -219,11 +228,9 @@ static void __init imx6q_csi_mux_init(void)
 
 	gpr = syscon_regmap_lookup_by_compatible("fsl,imx6q-iomuxc-gpr");
 	if (!IS_ERR(gpr)) {
-		if (of_machine_is_compatible("fsl,imx6q-sabresd") ||
-			of_machine_is_compatible("fsl,imx6q-sabreauto"))
+		if(cpu_is_imx6q())
 			regmap_update_bits(gpr, IOMUXC_GPR1, 1 << 19, 1 << 19);
-		else if (of_machine_is_compatible("fsl,imx6dl-sabresd") ||
-			 of_machine_is_compatible("fsl,imx6dl-sabreauto"))
+		else if (cpu_is_imx6dl())
 			regmap_update_bits(gpr, IOMUXC_GPR13, 0x3F, 0x0C);
 	} else {
 		pr_err("%s(): failed to find fsl,imx6q-iomux-gpr regmap\n",
@@ -293,8 +300,8 @@ put_enet_node:
 static inline void imx6q_enet_init(void)
 {
 	imx6_enet_mac_init("fsl,imx6q-fec");
-	imx6q_enet_phy_init();
-	imx6q_1588_init();
+	/*imx6q_enet_phy_init();*/
+	/*imx6q_1588_init();*/
 }
 
 /* Add auxdata to pass platform data */
@@ -420,6 +427,55 @@ static void __init imx6q_audio_lvds2_init(void)
 	clk_set_rate(esai, ESAI_AUDIO_MCLK);
 }
 
+static void __init dvi_power_init(void)
+{
+	struct device_node *lcd;
+
+    lcd = of_find_node_by_name(NULL, "dvi_ctrl");
+	if (!lcd)
+		return;
+
+    lcd_pwr_gpio = of_get_named_gpio(lcd, "lcd-pwr-gpio", 0);
+	if (gpio_is_valid(lcd_pwr_gpio) &&
+		!gpio_request_one(lcd_pwr_gpio, GPIOF_DIR_OUT, "lcd-pwr-gpio")) {
+		gpio_set_value_cansleep(lcd_pwr_gpio, 0);
+	}
+
+    dvi_ddc_i2c_gpio = of_get_named_gpio(lcd, "dvi-ddc-i2c-gpio", 0);
+	if (gpio_is_valid(dvi_ddc_i2c_gpio) &&
+		!gpio_request_one(dvi_ddc_i2c_gpio, GPIOF_DIR_OUT, "dvi-ddc-i2c-gpio")) {
+		gpio_set_value_cansleep(dvi_ddc_i2c_gpio, 1);
+	}
+
+    dvi_pwr_gpio = of_get_named_gpio(lcd, "dvi-pwr-gpio", 0);
+	if (gpio_is_valid(dvi_pwr_gpio) &&
+		!gpio_request_one(dvi_pwr_gpio, GPIOF_DIR_OUT, "dvi-pwr-gpio")) {
+		gpio_set_value_cansleep(dvi_pwr_gpio, 1);
+	}
+
+    /* dvi reset */
+    dvi_reset_gpio = of_get_named_gpio(lcd, "dvi-reset-gpio", 0);
+	if (gpio_is_valid(dvi_reset_gpio) &&
+		!gpio_request_one(dvi_reset_gpio, GPIOF_DIR_OUT, "dvi-reset-gpio")) {
+		gpio_set_value_cansleep(dvi_reset_gpio, 0);
+        msleep(80); // 50 O.C
+		gpio_set_value_cansleep(dvi_reset_gpio, 1);
+        msleep(40); // 20 O.C             /* tRES >= 50us */
+		gpio_set_value_cansleep(dvi_reset_gpio, 0);
+	}
+
+    int fec_reset_gpio;
+    /* fec reset */
+    fec_reset_gpio = of_get_named_gpio(lcd, "fec-gpios", 0);
+	if (gpio_is_valid(fec_reset_gpio) &&
+		!gpio_request_one(fec_reset_gpio, GPIOF_DIR_OUT, "fec-gpios")) {
+		gpio_set_value_cansleep(fec_reset_gpio, 0);
+        udelay(200);
+		gpio_set_value_cansleep(fec_reset_gpio, 1);
+		pr_err("fec_reset_gpio 2\n");
+	}
+}
+
 static struct platform_device imx6q_cpufreq_pdev = {
 	.name = "imx6-cpufreq",
 };
@@ -452,10 +508,9 @@ static void __init imx6q_init_late(void)
 		platform_device_register(&imx6q_cpufreq_pdev);
 	}
 
-	if (of_machine_is_compatible("fsl,imx6q-sabreauto")
-		|| of_machine_is_compatible("fsl,imx6dl-sabreauto")) {
+	if (of_machine_is_compatible("fsl,imx6q-skyline")) {
 		imx6q_flexcan_fixup_auto();
-		imx6q_audio_lvds2_init();
+        dvi_power_init();
 	}
 }
 
