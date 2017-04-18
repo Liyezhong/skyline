@@ -836,6 +836,19 @@
 				status = "disabled";
 			};
 
+			/* Move sd4 to first because sd4 connect to emmc.
+			   Mfgtools want emmc is mmcblk0 and other sd card is mmcblk1.
+			*/
+			usdhc4: usdhc@0219c000 {
+				compatible = "fsl,imx6q-usdhc";
+				reg = <0x0219c000 0x4000>;
+				interrupts = <0 25 0x04>;
+				clocks = <&clks 166>, <&clks 166>, <&clks 166>;
+				clock-names = "ipg", "ahb", "per";
+				bus-width = <4>;
+				status = "disabled";
+			};
+
 			usdhc1: usdhc@02190000 {
 				compatible = "fsl,imx6q-usdhc";
 				reg = <0x02190000 0x4000>;
@@ -861,16 +874,6 @@
 				reg = <0x02198000 0x4000>;
 				interrupts = <0 24 0x04>;
 				clocks = <&clks 165>, <&clks 165>, <&clks 165>;
-				clock-names = "ipg", "ahb", "per";
-				bus-width = <4>;
-				status = "disabled";
-			};
-
-			usdhc4: usdhc@0219c000 {
-				compatible = "fsl,imx6q-usdhc";
-				reg = <0x0219c000 0x4000>;
-				interrupts = <0 25 0x04>;
-				clocks = <&clks 166>, <&clks 166>, <&clks 166>;
 				clock-names = "ipg", "ahb", "per";
 				bus-width = <4>;
 				status = "disabled";
@@ -1076,7 +1079,19 @@
 			fsl,pins = <
 				MX6QDL_PAD_EIM_D19__GPIO3_IO19 0x80000000
 			>;
-		};
+		     };
+
+		pinctrl_ecspi1_cs_2: ecspi1_cs_grp-2 {
+			fsl,pins = <
+				MX6QDL_PAD_KEY_ROW1__GPIO4_IO09 0x80000000
+			>;
+		     };
+
+		pinctrl_ecspi1_cs_3: ecspi1_cs_grp-3 {
+			fsl,pins = <
+				MX6QDL_PAD_EIM_EB2__GPIO2_IO30  0x80000000
+			>;
+		     };
 
 		pinctrl_ecspi1_1: ecspi1grp-1 {
 			fsl,pins = <
@@ -1094,6 +1109,16 @@
 			>;
 		};
 	};
+
+        ecspi2 {
+                pinctrl_ecspi2_1: ecspi2grp-1 {
+                        fsl,pins = <
+                                MX6QDL_PAD_EIM_OE__ECSPI2_MISO 0x100b1
+                                MX6QDL_PAD_EIM_CS1__ECSPI2_MOSI 0x100b1
+                                MX6QDL_PAD_EIM_CS0__ECSPI2_SCLK 0x100b1
+                        >;
+                };
+        };
 
 	ecspi3 {
 		pinctrl_ecspi3_1: ecspi3grp-1 {
@@ -1215,6 +1240,13 @@
 				MX6QDL_PAD_KEY_ROW2__FLEXCAN1_RX 0x80000000
 			>;
 		};
+
+                pinctrl_flexcan1_3: flexcan1grp-3 {
+                        fsl,pins = <
+                                MX6QDL_PAD_GPIO_7__FLEXCAN1_TX   0x80000000
+                                MX6QDL_PAD_GPIO_8__FLEXCAN1_RX   0x80000000
+                        >;
+                };
 	};
 
 	flexcan2 {
@@ -1354,6 +1386,13 @@
 				MX6QDL_PAD_EIM_D18__I2C3_SDA 0x4001b8b1
 			>;
 		};
+
+        	pinctrl_i2c3_5: i2c3grp-5 {
+            		fsl,pins = <
+                		MX6QDL_PAD_GPIO_5__I2C3_SCL	 0x4001b8b1
+                		MX6QDL_PAD_GPIO_6__I2C3_SDA	 0x4001b8b1
+            		>;
+        	};
 	};
 
 	ipu1 {
@@ -1507,6 +1546,15 @@
 				MX6QDL_PAD_EIM_D29__UART2_DTE_RTS_B 0x1b0b1
 			>;
 		};
+
+                pinctrl_uart2_3: uart2grp-3 { /* DTE mode */
+                        fsl,pins = <
+                                MX6QDL_PAD_EIM_D26__UART2_TX_DATA   0x1b0b1
+                                MX6QDL_PAD_EIM_D27__UART2_RX_DATA   0x1b0b1
+                                MX6QDL_PAD_SD3_CMD__UART2_CTS_B     0x1b0b1
+                                MX6QDL_PAD_SD3_CLK__UART2_RTS_B     0x1b0b1
+                        >;
+                };
 	};
 
 	uart3 {
