@@ -33,6 +33,20 @@ case "$1" in
         make distclean
         ;;
     "menuconfig")
+        if ! [ -f ".config" ]; then
+            make imx_v7_skyline_defconfig
+            [ $? != 0 ] && exit 1
+            make menuconfig
+            [ $? != 0 ] && exit 1
+        else
+            make menuconfig
+            [ $? != 0 ] && exit 1
+        fi
         build_skyline_linux
+        ;;
+    "install")
+        cp -a arch/arm/boot/zImage /media/arthur/BOOT/
+        cp -a arch/arm/boot/dts/imx6q-skyline.dtb /media/arthur/BOOT/
+        sync
         ;;
 esac
