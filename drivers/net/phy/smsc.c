@@ -197,7 +197,7 @@ static int lan9303_config_init(struct phy_device *phydev)
 	int ret;
 
 	dev_set_drvdata(&phydev->dev, phydev);
-	ret = sysfs_create_group(&phydev->dev.kobj, &lan9303_attribute_group);
+	ret = sysfs_update_group(&phydev->dev.kobj, &lan9303_attribute_group);
 	if (ret) {
 		dev_err(&phydev->dev, "unable to create sysfs file, err=%d\n",
 			ret);
