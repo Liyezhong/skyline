@@ -31,6 +31,8 @@
 
 #include "ks8851.h"
 
+unsigned char spi_mac[ETH_ALEN];
+
 /**
  * struct ks8851_rxctrl - KS8851 driver rx control
  * @mchash: Multicast hash-table data.
@@ -405,7 +407,7 @@ static int ks8851_write_mac_addr(struct net_device *dev)
 }
 
 /**
- * ks8851_read_mac_addr - read mac address from device registers
+ * ks8851_read_mac_addr - read mac address from kernel parameters
  * @dev: The network device
  *
  * Update our copy of the KS8851 MAC address from the registers of @dev.
@@ -417,8 +419,7 @@ static void ks8851_read_mac_addr(struct net_device *dev)
 
 	mutex_lock(&ks->lock);
 
-	for (i = 0; i < ETH_ALEN; i++)
-		dev->dev_addr[i] = ks8851_rdreg8(ks, KS_MAR(i));
+    memcpy(dev->dev_addr, spi_mac, ETH_ALEN);
 
 	mutex_unlock(&ks->lock);
 }
@@ -436,15 +437,13 @@ static void ks8851_init_mac(struct ks8851_net *ks)
 {
 	struct net_device *dev = ks->netdev;
 
-	/* first, try reading what we've got already */
-	if (ks->rc_ccr & CCR_EEPROM) {
-		ks8851_read_mac_addr(dev);
-		if (is_valid_ether_addr(dev->dev_addr))
-			return;
+    ks8851_read_mac_addr(dev);
+    if (is_valid_ether_addr(dev->dev_addr)) {
+        ks8851_write_mac_addr(dev);
+        return;
+    }
 
-		netdev_err(ks->netdev, "invalid mac address read %pM\n",
-				dev->dev_addr);
-	}
+    netdev_err(ks->netdev, "invalid mac address read %pM\n", dev->dev_addr);
 
 	eth_hw_addr_random(dev);
 	ks8851_write_mac_addr(dev);
@@ -1570,6 +1569,24 @@ static int ks8851_remove(struct spi_device *spi)
 
 	return 0;
 }
+
+/* Get spi ethernet address by kernel parameter, because the Ebox2 has no eeprom */
+static int __init ks8851_mac_boot_setup(char* str)
+{
+    if (strlen(str) != 17)
+        return 1;
+    if (str[2] != ':' || str[5] != ':' || str[8] != ':' || str[11] != ':' || str[14] != ':')
+        return 1;
+
+    printk("spi_mac: %s\n", str);
+
+    return sscanf(str, "%02x:%02x:%02x:%02x:%02x:%02x",
+    	(unsigned int *)&spi_mac[0], (unsigned int *)&spi_mac[1],
+    	 (unsigned int *)&spi_mac[2], (unsigned int *)&spi_mac[3],
+    	  (unsigned int *)&spi_mac[4], (unsigned int *)&spi_mac[5]);
+}
+
+__setup("spi_ethaddr=", ks8851_mac_boot_setup);
 
 static const struct of_device_id ks8851_match_table[] = {
 	{ .compatible = "micrel,ks8851" },
