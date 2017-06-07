@@ -595,6 +595,7 @@
         pinctrl-names = "default";
         pinctrl-0 = <&pinctrl_flexcan1_4>;
         trx-en-gpio = <&gpio7 6 0>;
+        trx-stby-gpio = <&gpio7 6 0>;
 	    status = "okay";
 };
 
